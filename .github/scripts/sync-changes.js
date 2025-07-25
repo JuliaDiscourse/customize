@@ -85,7 +85,8 @@ function createPutOptions(file, content) {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'Accept': '*/*',
         'Api-Key': API_KEY,
-        'Api-Username': API_USER
+        'Api-Username': API_USER,
+        'skip_validations': true
       }
     },
     payload
