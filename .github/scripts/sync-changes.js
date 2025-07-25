@@ -61,6 +61,10 @@ function getFileChanges() {
 // Helper function to create PUT options for a file
 function createPutOptions(file, content) {
   const path = require('path').dirname(file);
+  if (path !== "site_texts") {
+    console.error(`❌ The admin config /${path}/ is not currently supported`);
+    process.exit(1);
+  }
   const filename = require('path').basename(file, require('path').extname(file));
   const url = `https://discourse.julialang.org/admin/customize/${path}/${filename}`;
 
