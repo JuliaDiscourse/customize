@@ -14,6 +14,6 @@ Would similarly be possible, but may be even more dangerous and are currently no
 
 ## How it works
 
-This repo has a GitHub action that — upon commit to `main` — uses the Discourse API to identify the files that changed in the HEAD commit. GitHub branch restrictions should ensure that only one commit lands at a time. These files are used as the slug names, with their contents as the content of the override.
+This repo has a GitHub action that — upon commit to `main` — identifies the files that changed in the HEAD commit. GitHub branch restrictions should ensure that only one commit lands at a time. These files are used as the slug names, with their contents as the content of the override and sent as a `PUT` to the site's API.
 
 The GitHub action does not perform the API call in pull requests; it only performs the API call upon commiting to `main`.  All PRs must be carefully reviewed and if the action fails on `main`, then that commit should be reverted.
