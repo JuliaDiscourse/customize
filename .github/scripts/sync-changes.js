@@ -84,6 +84,7 @@ function createPutOptions(file, content) {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'Accept': '*/*',
+        'Content-Length': Buffer.byteLength(payload),
         'Api-Key': API_KEY,
         'Api-Username': API_USER
       }
