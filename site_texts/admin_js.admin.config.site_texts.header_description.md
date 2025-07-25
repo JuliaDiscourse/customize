@@ -1,0 +1,1 @@
+Customize any text used in Discourse to match your community’s voice and tone. **BUT NOT HERE!** Do this through the automated mechanism at [github.com/JuliaDiscourse/SiteTexts](https://github.com/JuliaDiscourse/SiteTexts).
