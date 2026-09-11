@@ -17,12 +17,14 @@ jobs:
   pull:
     runs-on: ubuntu-latest
     environment: "GitHub Actions CI"
+    timeout-minutes: 20
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0  # History so the rebase retry below can find merge bases
+        persist-credentials: true # needed in order to be able to push
 
     - name: Setup Julia
       uses: julia-actions/setup-julia@v2
