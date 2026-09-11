@@ -50,8 +50,12 @@ jobs:
         git rev-parse -q --verify "$REF^{commit}" >/dev/null 2>&1 || REF=HEAD~1
         julia --project=DiscourseAdmin -e 'using DiscourseAdmin; DiscourseAdmin.main_pull()'
         git add -A .
-        if ! git diff --cached --quiet "$REF" -- admin ':!*/.*'; then
-          git diff --cached --stat "$REF" -- admin ':!*/.*'
+        # Only routes the prior state already tracks can meaningfully drift:
+        # a route directory first introduced by this change has nothing to
+        # compare against (the pull job mirrors its live entries afterwards)
+        DIRS=$(git ls-tree -r --name-only "$REF" -- admin | xargs -rn1 dirname | sort -u)
+        if [ -n "$DIRS" ] && ! git diff --cached --quiet "$REF" -- $DIRS ':!*/.*'; then
+          git diff --cached --stat "$REF" -- $DIRS ':!*/.*'
           echo "::error::The repository does not reflect the current Discourse state. On main, the pull job re-syncs it automatically (on a PR, run the 'Pull from Discourse' workflow); then rebase and re-land this change."
           exit 1
         fi
