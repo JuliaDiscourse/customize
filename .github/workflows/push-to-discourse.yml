@@ -13,25 +13,60 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # PRs get a credential-less dry run: the planned API calls are printed,
+  # but nothing here can see the API key — pull requests execute code from
+  # the PR branch, which must never run with credentials. The authoritative
+  # drift check happens in the push job below, on main's own code.
+  dry-run:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0  # Full history for range diffing
+        persist-credentials: false
+
+    - name: Setup Julia
+      uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
+      with:
+        version: '1'
+
+    - name: Cache Julia packages
+      uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
+
+    - name: Instantiate DiscourseAdmin.jl
+      run: julia --project=DiscourseAdmin -e 'using Pkg; Pkg.instantiate()'
+
+    - name: Show the changes that would be pushed to Discourse
+      run: julia --project=DiscourseAdmin -e 'using DiscourseAdmin; DiscourseAdmin.main_push()'
+      env:
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
   push:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: "GitHub Actions CI"
     timeout-minutes: 20
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: 0  # Full history for range diffing
         persist-credentials: false
 
     - name: Setup Julia
-      uses: julia-actions/setup-julia@v2
+      uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
       with:
         version: '1'
 
     - name: Cache Julia packages
-      uses: julia-actions/cache@v2
+      uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
 
     - name: Instantiate DiscourseAdmin.jl
       run: julia --project=DiscourseAdmin -e 'using Pkg; Pkg.instantiate()'
@@ -40,12 +75,8 @@ jobs:
       env:
         API_KEY: ${{ secrets.API_KEY }}
         API_USER: ${{ secrets.API_USER }}
-        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        BASE_SHA: ${{ github.event.before }}
       run: |
-        if [ -z "$API_KEY" ]; then
-          echo "::warning::No API credentials available (fork PR?); skipping the live-state drift check"
-          exit 0
-        fi
         REF="$BASE_SHA"
         git rev-parse -q --verify "$REF^{commit}" >/dev/null 2>&1 || REF=HEAD~1
         julia --project=DiscourseAdmin -e 'using DiscourseAdmin; DiscourseAdmin.main_pull()'
@@ -56,7 +87,7 @@ jobs:
         DIRS=$(git ls-tree -r --name-only "$REF" -- admin | xargs -rn1 dirname | sort -u)
         if [ -n "$DIRS" ] && ! git diff --cached --quiet "$REF" -- $DIRS ':!*/.*'; then
           git diff --cached --stat "$REF" -- $DIRS ':!*/.*'
-          echo "::error::The repository does not reflect the current Discourse state. On main, the pull job re-syncs it automatically (on a PR, run the 'Pull from Discourse' workflow); then rebase and re-land this change."
+          echo "::error::The repository does not reflect the current Discourse state. The pull job will re-sync it automatically; then rebase and re-land this change."
           exit 1
         fi
         git reset -q --hard && git clean -qfd
@@ -68,8 +99,6 @@ jobs:
         API_USER: ${{ secrets.API_USER }}
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         BEFORE_SHA: ${{ github.event.before }}
-        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
   # Verify the changes landed
   pull:
