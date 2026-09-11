@@ -5,6 +5,9 @@ on:
     branches: [main] # Only actually push to Discourse on main
   pull_request: # Dry run on all PRs
 
+permissions:
+  contents: read
+
 concurrency:
   group: discourse-sync
   cancel-in-progress: false
@@ -13,12 +16,14 @@ jobs:
   push:
     runs-on: ubuntu-latest
     environment: "GitHub Actions CI"
+    timeout-minutes: 20
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0  # Full history for range diffing
+        persist-credentials: false
 
     - name: Setup Julia
       uses: julia-actions/setup-julia@v2
