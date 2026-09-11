@@ -1,0 +1,19 @@
+name = "DiscourseAdmin"
+uuid = "668080c2-7fe7-472f-9f5e-e408b2516b13"
+version = "0.1.0"
+authors = ["Matt Bauman <mbauman@julialang.org>"]
+
+[deps]
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+
+[compat]
+HTTP = "2"
+JSON = "1"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

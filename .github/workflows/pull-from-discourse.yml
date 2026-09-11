@@ -1,0 +1,56 @@
+name: Pull from Discourse
+
+on:
+  schedule:
+    - cron: '17 3 * * *'  # Daily; mirrors any changes made through the admin UI
+  workflow_dispatch:  # Allow manual runs
+  workflow_call:  # Runs after every "Push to Discourse" so main always reflects the live state
+
+permissions:
+  contents: write
+
+concurrency:
+  group: discourse-sync
+  cancel-in-progress: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    environment: "GitHub Actions CI"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # History so the rebase retry below can find merge bases
+
+    - name: Setup Julia
+      uses: julia-actions/setup-julia@v2
+      with:
+        version: '1'
+
+    - name: Cache Julia packages
+      uses: julia-actions/cache@v2
+
+    - name: Instantiate DiscourseAdmin.jl
+      run: julia --project=DiscourseAdmin -e 'using Pkg; Pkg.instantiate()'
+
+    - name: Fetch current state from Discourse
+      run: julia --project=DiscourseAdmin -e 'using DiscourseAdmin; DiscourseAdmin.main_pull()'
+      env:
+        API_KEY: ${{ secrets.API_KEY }}
+        API_USER: ${{ secrets.API_USER }}
+
+    - name: Commit and push changes
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        # Stage the admin/ tree (the mirror's sync scope)
+        git add -A -- admin ':!*/.*'
+        if git diff --staged --quiet; then
+          echo "Repository already matches Discourse; nothing to commit"
+        else
+          git commit -m "Pull current state from Discourse"
+          # Retry once on a non-fast-forward in case main moved during the run
+          git push || { git pull --rebase origin main && git push; }
+        fi
