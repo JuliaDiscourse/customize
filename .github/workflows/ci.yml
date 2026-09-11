@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test DiscourseAdmin.jl
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Julia
+      uses: julia-actions/setup-julia@v2
+      with:
+        version: '1'
+
+    - name: Cache Julia packages
+      uses: julia-actions/cache@v2
+
+    - name: Build package
+      uses: julia-actions/julia-buildpkg@v1
+      with:
+        project: DiscourseAdmin
+
+    - name: Run tests
+      uses: julia-actions/julia-runtest@v1
+      with:
+        project: DiscourseAdmin

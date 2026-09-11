@@ -1,0 +1,83 @@
+name: Push to Discourse
+
+on:
+  push:
+    branches: [main]  # Actual push to Discourse on main branch only
+  pull_request:  # Dry run on all PRs
+
+concurrency:
+  group: discourse-sync
+  cancel-in-progress: false
+
+jobs:
+  push:
+    # Skip commits made by the pull workflow: that state came *from* Discourse
+    # (pushes made with GITHUB_TOKEN don't trigger workflows anyway, but be safe)
+    if: github.event_name == 'pull_request' || github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    environment: "GitHub Actions CI"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for range diffing
+
+    - name: Setup Julia
+      uses: julia-actions/setup-julia@v2
+      with:
+        version: '1'
+
+    - name: Cache Julia packages
+      uses: julia-actions/cache@v2
+
+    - name: Instantiate DiscourseAdmin.jl
+      run: julia --project=DiscourseAdmin -e 'using Pkg; Pkg.instantiate()'
+
+    # The pull job runs after every push, so the pre-change state should
+    # match the live site exactly. When it doesn't (e.g. an un-pulled admin
+    # UI edit that this push would clobber), refuse to apply anything and
+    # let the pull job below re-sync main instead. Mirror the live state
+    # into the working tree, let git spot the difference, and restore the
+    # tree for the apply step below.
+    - name: Verify the applied state still matches Discourse
+      env:
+        API_KEY: ${{ secrets.API_KEY }}
+        API_USER: ${{ secrets.API_USER }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      run: |
+        if [ -z "$API_KEY" ]; then
+          echo "::warning::No API credentials available (fork PR?); skipping the live-state drift check"
+          exit 0
+        fi
+        REF="$BASE_SHA"
+        git rev-parse -q --verify "$REF^{commit}" >/dev/null 2>&1 || REF=HEAD~1
+        julia --project=DiscourseAdmin -e 'using DiscourseAdmin; DiscourseAdmin.main_pull()'
+        git add -A .
+        if ! git diff --cached --quiet "$REF" -- admin ':!*/.*'; then
+          git diff --cached --stat "$REF" -- admin ':!*/.*'
+          echo "::error::The repository does not reflect the current Discourse state. On main, the pull job re-syncs it automatically (on a PR, run the 'Pull from Discourse' workflow); then rebase and re-land this change."
+          exit 1
+        fi
+        git reset -q --hard && git clean -qfd
+
+    - name: Push changes to Discourse
+      run: julia --project=DiscourseAdmin -e 'using DiscourseAdmin; DiscourseAdmin.main_push()'
+      env:
+        API_KEY: ${{ secrets.API_KEY }}
+        API_USER: ${{ secrets.API_USER }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        BEFORE_SHA: ${{ github.event.before }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+  # After deploying — or failing to — mirror the live Discourse state back so
+  # main always reflects reality. A successful push makes this a no-op; a
+  # failed one self-reverts in the repo without manual intervention.
+  pull:
+    needs: push
+    if: ${{ always() && github.event_name == 'push' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/pull-from-discourse.yml
+    secrets: inherit
