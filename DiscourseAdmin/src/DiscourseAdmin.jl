@@ -1,15 +1,11 @@
 """
     DiscourseAdmin
 
-Keep this repository and the live configuration of a Discourse instance in
-sync in both directions, by convention: the repository's `admin/` tree
-mirrors the admin API routes of the same paths — `admin/customize/site_texts/`
-holds one file per entry on the `/admin/customize/site_texts` route — with
-each filename being the configuration key (plus an optional `.txt`/`.md`
-display extension) and its contents the configured value. Only paths under
-`admin/` are synced, and dotfiles (like a `.gitkeep` holding an empty
-directory in git) are ignored. Supporting another endpoint is a matter of
-`mkdir -p`.
+A simple package to manage Discourse `admin` configuration.
+
+This treats the admin settings as a simple key/value store.
+The values are contents of files; the filenames (less an extension)
+are the keys, and the `admin/**/key.ext` path is the API route.
 
 The two CLI entry points used by the GitHub workflows are
 [`main_pull`](@ref) (mirror the live state into the repository) and
@@ -119,10 +115,7 @@ function reset_value!(c::Client, dir, key)
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# Repository conventions
 
-"The repository directories mirroring API routes: every leaf directory under admin/."
 function config_dirs(root = "admin")
     isdir(root) || return String[]
     dirs = String[]
@@ -135,7 +128,7 @@ end
 # Configuration keys themselves contain dots (e.g. guidelines_topic.body),
 # so only the known display extensions (.txt, .md — kept so files render
 # nicely on GitHub) are stripped from a filename to form the key.
-key_for_file(file) = replace(basename(file), r"\.(txt|md)$" => "")
+key_for_file(file) = replace(basename(file), r"\.(txt|md|json)$" => "")
 
 # Map each configured key to its on-disk file (ignoring dotfiles), so an
 # existing file's display extension is preserved when its value is updated.
@@ -144,9 +137,6 @@ function existing_files_by_key(dir)
     return Dict{String,String}(key_for_file(f) => joinpath(dir, f)
                                for f in readdir(dir) if !startswith(f, "."))
 end
-
-# ---------------------------------------------------------------------------
-# Pull: mirror the live state into the repository
 
 """
     pull!(c::Client, dirs=config_dirs())
@@ -183,9 +173,6 @@ function pull!(c::Client, dirs = config_dirs())
     end
     return nothing
 end
-
-# ---------------------------------------------------------------------------
-# Push: apply committed changes to the live site
 
 git(args...) = readchomp(Cmd(["git", args...]))
 
@@ -253,10 +240,6 @@ function apply!(c::Union{Client,Nothing}, changes; deploy::Bool)
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# Workflow entry points
-
-fail(msg) = (println(stderr, "❌ $msg"); exit(1))
 
 """
     main_pull()
@@ -264,11 +247,8 @@ fail(msg) = (println(stderr, "❌ $msg"); exit(1))
 Workflow entry point: mirror the live Discourse state into the repository.
 """
 function main_pull()
-    try
-        pull!(client_from_env())
-    catch e
-        e isa ErrorException ? fail(e.msg) : rethrow()
-    end
+    pull!(client_from_env())
+    return 0
 end
 
 """
@@ -280,21 +260,18 @@ verifies that the pre-change state still matches the live one before
 running this.
 """
 function main_push()
-    try
-        deploy = get(ENV, "GITHUB_EVENT_NAME", "") == "push"
-        println("🚀 Running in $(deploy ? "LIVE" : "DRY RUN") mode")
+    deploy = get(ENV, "GITHUB_EVENT_NAME", "") == "push"
+    println("🚀 Running in $(deploy ? "LIVE" : "DRY RUN") mode")
 
-        range = diff_range(deploy)
-        println("Diffing $range")
-        changes = file_changes(range)
-        if isempty(changes)
-            println("No file changes detected")
-            return
-        end
-        apply!(deploy ? client_from_env() : nothing, changes; deploy)
-    catch e
-        e isa ErrorException ? fail(e.msg) : rethrow()
+    range = diff_range(deploy)
+    println("Diffing $range")
+    changes = file_changes(range)
+    if isempty(changes)
+        println("No file changes detected")
+        return 0
     end
+    apply!(deploy ? client_from_env() : nothing, changes; deploy)
+    return 0
 end
 
 end # module

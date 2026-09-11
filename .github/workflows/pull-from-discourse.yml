@@ -2,9 +2,9 @@ name: Pull from Discourse
 
 on:
   schedule:
-    - cron: '17 3 * * *'  # Daily; mirrors any changes made through the admin UI
-  workflow_dispatch:  # Allow manual runs
-  workflow_call:  # Runs after every "Push to Discourse" so main always reflects the live state
+    - cron: '17 3 * * *' # sync with discourse daily
+  workflow_dispatch:
+  workflow_call: # Run after every "Push to Discourse" so main always reflects the live state
 
 permissions:
   contents: write

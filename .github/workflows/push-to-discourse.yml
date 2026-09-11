@@ -2,8 +2,8 @@ name: Push to Discourse
 
 on:
   push:
-    branches: [main]  # Actual push to Discourse on main branch only
-  pull_request:  # Dry run on all PRs
+    branches: [main] # Only actually push to Discourse on main
+  pull_request: # Dry run on all PRs
 
 concurrency:
   group: discourse-sync
@@ -11,9 +11,6 @@ concurrency:
 
 jobs:
   push:
-    # Skip commits made by the pull workflow: that state came *from* Discourse
-    # (pushes made with GITHUB_TOKEN don't trigger workflows anyway, but be safe)
-    if: github.event_name == 'pull_request' || github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     environment: "GitHub Actions CI"
 
@@ -34,13 +31,7 @@ jobs:
     - name: Instantiate DiscourseAdmin.jl
       run: julia --project=DiscourseAdmin -e 'using Pkg; Pkg.instantiate()'
 
-    # The pull job runs after every push, so the pre-change state should
-    # match the live site exactly. When it doesn't (e.g. an un-pulled admin
-    # UI edit that this push would clobber), refuse to apply anything and
-    # let the pull job below re-sync main instead. Mirror the live state
-    # into the working tree, let git spot the difference, and restore the
-    # tree for the apply step below.
-    - name: Verify the applied state still matches Discourse
+    - name: Ensure the prior state matches the current Discourse settings
       env:
         API_KEY: ${{ secrets.API_KEY }}
         API_USER: ${{ secrets.API_USER }}
@@ -71,9 +62,7 @@ jobs:
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
-  # After deploying — or failing to — mirror the live Discourse state back so
-  # main always reflects reality. A successful push makes this a no-op; a
-  # failed one self-reverts in the repo without manual intervention.
+  # Verify the changes landed
   pull:
     needs: push
     if: ${{ always() && github.event_name == 'push' }}
