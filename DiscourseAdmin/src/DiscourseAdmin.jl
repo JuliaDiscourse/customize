@@ -4,8 +4,13 @@
 A simple package to manage Discourse `admin` configuration.
 
 This treats the admin settings as a simple key/value store.
-The values are contents of files; the filenames (less an extension)
-are the keys, and the `admin/**/key.ext` path is the API route.
+The values are contents of files, and the `admin/**` path is the API
+route. An entry on a localized route is `route/key/locale.ext` (e.g.
+`admin/customize/site_texts/guidelines_topic.body/en.md`); an entry on
+a locale-less route is simply `route/key.ext`. The extension is only
+for display on GitHub. Pulling mirrors every locale the site has
+entries in, so a new route needs nothing but its (`.gitkeep`-held)
+directory.
 
 The two CLI entry points used by the GitHub workflows are
 [`main_pull`](@ref) (mirror the live state into the repository) and
@@ -19,7 +24,6 @@ using JSON
 export Client
 
 const DEFAULT_BASE_URL = "https://discourse.julialang.org"
-const LOCALE = "en"
 
 # ---------------------------------------------------------------------------
 # The Discourse admin API
@@ -53,126 +57,205 @@ auth_headers(c::Client) = ["Api-Key" => c.api_key, "Api-Username" => c.api_user]
 
 # Discourse is Rails: a route's JSON objects and form fields use the
 # singular of its last segment (admin/customize/site_texts → site_text)
-singular(dir) = chopsuffix(basename(dir), "s")
+singular(route) = chopsuffix(basename(route), "s")
 
-endpoint(c::Client, dir, key = nothing) =
-    "$(c.base_url)/$dir$(isnothing(key) ? "" : "/$(HTTP.escapeuri(key))")"
+endpoint(c::Client, route, key = nothing) =
+    "$(c.base_url)/$route$(isnothing(key) ? "" : "/$(HTTP.escapeuri(key))")"
+
+# The site texts API requires an explicit locale on every request; routes
+# without locale support simply have none to send.
+locale_query(locale) = isnothing(locale) ? Pair{String,String}[] : ["locale" => locale]
 
 """
-    configured_keys(c::Client, dir) -> Vector{String}
+    configured_keys(c::Client, route; locale=nothing) -> Vector{String}
 
-The keys of every entry currently configured on the `dir` endpoint,
+The keys of every entry currently configured on the `route` endpoint,
 following `extras.has_more` pagination through the `page` parameter.
 """
-function configured_keys(c::Client, dir)
+function configured_keys(c::Client, route; locale = nothing)
     keys = String[]
     page = 0
     while true
-        resp = HTTP.get("$(endpoint(c, dir)).json";
-                        query = ["overridden" => "true", "locale" => LOCALE,
-                                 "page" => string(page)],
+        resp = HTTP.get("$(endpoint(c, route)).json";
+                        query = [["overridden" => "true", "page" => string(page)];
+                                 locale_query(locale)],
                         headers = auth_headers(c))
         data = JSON.parse(String(resp.body))
-        append!(keys, String[t["id"] for t in data[basename(dir)]])
+        append!(keys, String[t["id"] for t in data[basename(route)]])
         get(get(data, "extras", Dict()), "has_more", false) || return keys
         page += 1
     end
 end
 
 """
-    get_value(c::Client, dir, key) -> String
+    get_value(c::Client, route, key; locale=nothing) -> String
 
-The currently-configured value of `key` on the `dir` endpoint.
+The currently-configured value of `key` on the `route` endpoint.
 """
-function get_value(c::Client, dir, key)
-    resp = HTTP.get("$(endpoint(c, dir, key)).json";
-                    query = ["locale" => LOCALE], headers = auth_headers(c))
-    return JSON.parse(String(resp.body))[singular(dir)]["value"]::String
+function get_value(c::Client, route, key; locale = nothing)
+    resp = HTTP.get("$(endpoint(c, route, key)).json";
+                    query = locale_query(locale), headers = auth_headers(c))
+    return JSON.parse(String(resp.body))[singular(route)]["value"]::String
 end
 
 """
-    set_value!(c::Client, dir, key, value)
+    set_value!(c::Client, route, key, value; locale=nothing)
 
-Create or update the configuration of `key` on the `dir` endpoint.
+Create or update the configuration of `key` on the `route` endpoint.
 """
-function set_value!(c::Client, dir, key, value)
-    HTTP.put(endpoint(c, dir, key);
+function set_value!(c::Client, route, key, value; locale = nothing)
+    form = ["$(singular(route))[value]" => value]
+    isnothing(locale) || push!(form, "$(singular(route))[locale]" => locale)
+    HTTP.put(endpoint(c, route, key);
              headers = [auth_headers(c);
                         "Content-Type" => "application/x-www-form-urlencoded; charset=UTF-8"],
-             body = HTTP.escapeuri(["$(singular(dir))[value]" => value,
-                                    "$(singular(dir))[locale]" => LOCALE]))
+             body = HTTP.escapeuri(form))
     return nothing
 end
 
 """
-    reset_value!(c::Client, dir, key)
+    reset_value!(c::Client, route, key; locale=nothing)
 
 Remove the configuration of `key`, reverting it to the Discourse default.
 """
-function reset_value!(c::Client, dir, key)
-    HTTP.delete(endpoint(c, dir, key);
-                query = ["locale" => LOCALE], headers = auth_headers(c))
+function reset_value!(c::Client, route, key; locale = nothing)
+    HTTP.delete(endpoint(c, route, key);
+                query = locale_query(locale), headers = auth_headers(c))
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# Repository conventions
 
-function config_dirs(root = "admin")
+# Extensions are only for display on GitHub; strip them to find the name
+const DISPLAY_EXTENSION = r"\.(txt|md|json)$"
+const LOCALE_SHAPE = r"^[a-z]{2}([_-][A-Za-z]{2})?$"
+
+"""
+    entry_for(file) -> (route, key, locale)
+
+The API entry a repository file manages. A filename shaped like a locale
+(`en`, `pt_BR`, `en-GB`) holds one translation of the key named by its
+parent directory (`route/key/locale.ext`); any other filename is itself the
+key of a locale-less entry (`route/key.ext`), with `locale === nothing`.
+"""
+function entry_for(file)
+    name = replace(basename(file), DISPLAY_EXTENSION => "")
+    occursin(LOCALE_SHAPE, name) && return (dirname(dirname(file)), basename(dirname(file)), name)
+    return (dirname(file), name, nothing)
+end
+
+"""
+    config_routes(root="admin") -> Vector{String}
+
+The API routes the repository mirrors, declared by the files present: an
+entry file declares its own route, and a dotfile (like a `.gitkeep`
+holding an otherwise-empty route directory) declares its containing
+directory.
+"""
+function config_routes(root = "admin")
+    routes = Set{String}()
     isdir(root) || return String[]
-    dirs = String[]
-    for (path, subdirs, _) in walkdir(root)
-        isempty(subdirs) && push!(dirs, path)
+    for (path, _, files) in walkdir(root), f in files
+        push!(routes, startswith(f, ".") ? path : entry_for(joinpath(path, f))[1])
     end
-    return sort!(dirs)
+    return sort!(collect(routes))
 end
 
-# Configuration keys themselves contain dots (e.g. guidelines_topic.body),
-# so only the known display extensions (.txt, .md — kept so files render
-# nicely on GitHub) are stripped from a filename to form the key.
-key_for_file(file) = replace(basename(file), r"\.(txt|md|json)$" => "")
-
-# Map each configured key to its on-disk file (ignoring dotfiles), so an
-# existing file's display extension is preserved when its value is updated.
-function existing_files_by_key(dir)
-    isdir(dir) || return Dict{String,String}()
-    return Dict{String,String}(key_for_file(f) => joinpath(dir, f)
-                               for f in readdir(dir) if !startswith(f, "."))
+# Map each key of a (route, locale) pair to its on-disk file, so an existing
+# file's display extension is preserved when its value is updated.
+function existing_files(route, locale)
+    bykey = Dict{String,String}()
+    isdir(route) || return bykey
+    for (path, _, files) in walkdir(route), f in files
+        startswith(f, ".") && continue
+        file = joinpath(path, f)
+        r, key, loc = entry_for(file)
+        r == route && loc == locale && (bykey[key] = file)
+    end
+    return bykey
 end
 
+# ---------------------------------------------------------------------------
+# Pull: mirror the live state into the repository
+
 """
-    pull!(c::Client, dirs=config_dirs())
+    available_locales(c::Client) -> Vector{String}
 
-Mirror the live configuration of each endpoint into its directory, adding,
-updating, and removing files so it exactly reflects the live state.
+Every locale the instance supports, read from the `default_locale` site
+setting's valid values.
 """
-function pull!(c::Client, dirs = config_dirs())
-    for dir in dirs
-        keys = configured_keys(c, dir)
-        println("🔍 Found $(length(keys)) configured entries in $dir")
+function available_locales(c::Client)
+    resp = HTTP.get("$(c.base_url)/admin/site_settings.json"; headers = auth_headers(c))
+    settings = JSON.parse(String(resp.body))["site_settings"]
+    i = findfirst(s -> s["setting"] == "default_locale", settings)
+    isnothing(i) && error("could not determine the available locales from the site settings")
+    return String[v["value"] for v in settings[i]["valid_values"]]
+end
 
-        existing = existing_files_by_key(dir)
-        mkpath(dir)
-        for key in keys
-            value = get_value(c, dir, key)
-            file = get(existing, key, joinpath(dir, "$key.txt"))
-            current = isfile(file) ? read(file, String) : nothing
-            if current != value
-                write(file, value)
-                println("📝 $(isnothing(current) ? "Added" : "Updated") $file")
-            else
-                println("✅ Unchanged $file")
-            end
-        end
+# Of all the admin routes, only site_texts requires (and localizes by) a
+# locale parameter; every other route ignores it.
+localized(route) = basename(route) == "site_texts"
 
-        # Remove files whose entries are no longer configured on Discourse
-        for (key, file) in existing
-            if key ∉ keys
-                rm(file)
-                println("🗑️  Removed $file (no longer configured)")
+"""
+    pull!(c::Client, routes=config_routes())
+
+Mirror the live configuration of each route into its files, adding,
+updating, and removing them so the repository exactly reflects the live
+state. A [`localized`](@ref) route is mirrored for every locale the site
+has entries in.
+"""
+function pull!(c::Client, routes = config_routes())
+    for route in routes
+        if localized(route)
+            # mirror every locale with configured entries (or with
+            # lingering files to clean up)
+            for locale in available_locales(c)
+                keys = configured_keys(c, route; locale)
+                isempty(keys) && isempty(existing_files(route, locale)) && continue
+                mirror!(c, route, locale, keys)
             end
+        else
+            mirror!(c, route, nothing)
         end
     end
     return nothing
 end
+
+function mirror!(c::Client, route, locale, keys = configured_keys(c, route; locale))
+    println("🔍 Found $(length(keys)) configured entries in $route$(isnothing(locale) ? "" : " ($locale)")")
+
+    existing = existing_files(route, locale)
+    for key in keys
+        value = get_value(c, route, key; locale)
+        file = get(existing, key) do
+            isnothing(locale) ? joinpath(route, "$key.txt") : joinpath(route, key, "$locale.txt")
+        end
+        current = isfile(file) ? read(file, String) : nothing
+        if current != value
+            mkpath(dirname(file))
+            write(file, value)
+            println("📝 $(isnothing(current) ? "Added" : "Updated") $file")
+        else
+            println("✅ Unchanged $file")
+        end
+    end
+
+    # Remove files whose entries are no longer configured on Discourse
+    for (key, file) in existing
+        if key ∉ keys
+            rm(file)
+            println("🗑️  Removed $file (no longer configured)")
+            # and the key directory, once its last translation is gone
+            dir = dirname(file)
+            dir != route && isempty(readdir(dir)) && rm(dir)
+        end
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Push: apply committed changes to the live site
 
 git(args...) = readchomp(Cmd(["git", args...]))
 
@@ -211,28 +294,27 @@ end
     apply!(c::Union{Client,Nothing}, changes; deploy)
 
 Apply `changes` (as returned by [`file_changes`](@ref)) to each file's
-namesake route, or just print them when `deploy=false`.
+namesake entry, or just print them when `deploy=false`.
 """
 function apply!(c::Union{Client,Nothing}, changes; deploy::Bool)
     println("\n🔍 Sending $(length(changes)) updates:")
     println("━"^40)
 
     for (file, content) in changes
-        dir = dirname(file)
-        key = key_for_file(file)
+        route, key, locale = entry_for(file)
 
         if isnothing(content)
             # Deleting the file reverts the entry to the Discourse default
             println("🗑️  REVERT: $file → DELETE $key\n")
             if deploy
-                reset_value!(c, dir, key)
+                reset_value!(c, route, key; locale)
                 println("✅ Reverted $file")
             end
         else
             println("📝 UPDATE: $file → PUT $key")
             println("   Value: $(repr(content))\n")
             if deploy
-                set_value!(c, dir, key, content)
+                set_value!(c, route, key, content; locale)
                 println("✅ Updated $file")
             end
         end
@@ -240,6 +322,10 @@ function apply!(c::Union{Client,Nothing}, changes; deploy::Bool)
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# Workflow entry points
+
+fail(msg) = (println(stderr, "❌ $msg"); exit(1))
 
 """
     main_pull()
@@ -247,8 +333,11 @@ end
 Workflow entry point: mirror the live Discourse state into the repository.
 """
 function main_pull()
-    pull!(client_from_env())
-    return 0
+    try
+        pull!(client_from_env())
+    catch e
+        e isa ErrorException ? fail(e.msg) : rethrow()
+    end
 end
 
 """
@@ -260,18 +349,21 @@ verifies that the pre-change state still matches the live one before
 running this.
 """
 function main_push()
-    deploy = get(ENV, "GITHUB_EVENT_NAME", "") == "push"
-    println("🚀 Running in $(deploy ? "LIVE" : "DRY RUN") mode")
+    try
+        deploy = get(ENV, "GITHUB_EVENT_NAME", "") == "push"
+        println("🚀 Running in $(deploy ? "LIVE" : "DRY RUN") mode")
 
-    range = diff_range(deploy)
-    println("Diffing $range")
-    changes = file_changes(range)
-    if isempty(changes)
-        println("No file changes detected")
-        return 0
+        range = diff_range(deploy)
+        println("Diffing $range")
+        changes = file_changes(range)
+        if isempty(changes)
+            println("No file changes detected")
+            return
+        end
+        apply!(deploy ? client_from_env() : nothing, changes; deploy)
+    catch e
+        e isa ErrorException ? fail(e.msg) : rethrow()
     end
-    apply!(deploy ? client_from_env() : nothing, changes; deploy)
-    return 0
 end
 
 end # module

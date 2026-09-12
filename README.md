@@ -14,7 +14,7 @@ Would similarly be possible, but may be even more dangerous and are currently no
 
 ## How it works
 
-The sync logic lives in [`DiscourseAdmin.jl`](DiscourseAdmin/), a Julia package wrapping the Discourse admin API (tested in CI against a mock Discourse server). By convention, the repository's `admin/` tree mirrors the API routes of the same paths — `admin/customize/site_texts/` holds one file per entry on the `/admin/customize/site_texts` route — so supporting another endpoint is a matter of `mkdir -p`. Everything outside `admin/` (like the package itself) is out of the sync's scope. A pair of GitHub actions use the package to keep the repository and the live Discourse configuration in sync in both directions:
+The sync logic lives in [`DiscourseAdmin.jl`](DiscourseAdmin/), a Julia package wrapping the Discourse admin API (tested in CI against a mock Discourse server). By convention, the repository's `admin/` tree mirrors the API routes of the same paths, so supporting another endpoint is a matter of `mkdir -p`. An entry on a localized route is `route/key/locale.ext` — `admin/customize/site_texts/guidelines_topic.body/en.md` holds the `en` translation of that key, and the filename's locale is sent as the `locale` parameter (which the site texts API requires); an entry on a locale-less route is simply `route/key.ext`. Extensions are only for display on GitHub. Everything outside `admin/` (like the package itself) is out of the sync's scope. A pair of GitHub actions use the package to keep the repository and the live Discourse configuration in sync in both directions:
 
 ### Pull from Discourse
 
@@ -28,7 +28,7 @@ Before applying anything, the action verifies that the *pre-merge* state of the 
 
 After every push run on `main` — whether it succeeded or failed — the pull action runs and mirrors the live state back into the repo. A successful push makes this a no-op; a failed or partially-applied one is automatically corrected by a follow-up commit, so `main` always converges to the live Discourse state with no manual reverts. The offending change can then be rebased and re-landed.
 
-Because the pull runs after every push, `main`'s tip stays in step with the live state, and each push run simply diffs its own triggering event. Any disagreement between the two — an admin UI edit, a workflow run that got skipped or failed — either trips the drift check (applying nothing) or is converged by the next pull as a visible commit, so the system never needs to track what was applied. Dotfiles are ignored by the sync, so `admin/customize/site_texts/` starts as an empty directory held by a `.gitkeep` and the first pull populates it from the live state.
+Because the pull runs after every push, `main`'s tip stays in step with the live state, and each push run simply diffs its own triggering event. Any disagreement between the two — an admin UI edit, a workflow run that got skipped or failed — either trips the drift check (applying nothing) or is converged by the next pull as a visible commit, so the system never needs to track what was applied. Routes are declared by the files present — a bare `.gitkeep` in the route directory suffices — and a localized route is mirrored for every locale the site has entries in, so the first pull populates everything from the live state.
 
 The push action does not perform any config-changing API calls in pull requests; it only prints a dry run of what would happen. All PRs must still be carefully reviewed.
 
