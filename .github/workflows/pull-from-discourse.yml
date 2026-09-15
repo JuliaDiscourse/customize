@@ -9,8 +9,12 @@ on:
 permissions:
   contents: write
 
+# A called workflow's concurrency applies too, so requesting discourse-sync
+# here while the calling push run already holds it would self-deadlock. When
+# called (the caller's event is a push), the caller's lock covers this run —
+# use a per-run group; standalone schedule/dispatch runs take the real lock.
 concurrency:
-  group: discourse-sync
+  group: ${{ github.event_name == 'push' && format('discourse-sync-called-{0}', github.run_id) || 'discourse-sync' }}
   cancel-in-progress: false
 
 jobs:
