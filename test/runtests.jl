@@ -1,7 +1,7 @@
 using DiscourseAdmin
 using DiscourseAdmin: singular, entry_for, config_routes, existing_files, available_locales,
                       configured_keys, get_value, set_value!, reset_value!,
-                      pull!, file_changes, apply!, diff_range
+                      pull!, file_changes, apply!, git
 using HTTP
 using JSON
 using Test
@@ -16,22 +16,16 @@ using Test
 const PAGE_SIZE = 2
 const LAST_PUT_LOCALE = Ref("")
 
-function query_params(target)
-    parts = split(target, '?'; limit = 2)
-    length(parts) == 1 && return Dict{String,String}()
-    return Dict(String(k) => HTTP.unescapeuri(v)
-                for (k, v) in (split(kv, '='; limit = 2) for kv in split(parts[2], '&')))
-end
-
-parse_form(body) = Dict(HTTP.unescapeuri(k) => HTTP.unescapeuri(v)
-                        for (k, v) in (split(kv, '='; limit = 2) for kv in split(body, '&')))
+# The key addressed by a request path like "$route/some.key.json"
+key_of(path, route) = HTTP.unescapeuri(chopsuffix(chopprefix(path, "$route/"), ".json"))
 
 function mock_discourse(state::Dict{String,Dict{String,String}}, things::Dict{String,String}, port)
     st = "/admin/customize/site_texts"
     mt = "/admin/mock_things"
     return HTTP.serve!("127.0.0.1", port) do req
-        path = first(split(req.target, '?'))
-        qp = query_params(req.target)
+        uri = HTTP.URI(req.target)
+        path = uri.path
+        qp = HTTP.queryparams(uri)
 
         if path == "/admin/site_settings.json"
             return HTTP.Response(200, JSON.json(Dict("site_settings" => [
@@ -42,7 +36,7 @@ function mock_discourse(state::Dict{String,Dict{String,String}}, things::Dict{St
 
         if startswith(path, st)
             # like the real site texts API, every action requires a locale
-            locale = req.method == "PUT" ? get(parse_form(String(req.body)), "site_text[locale]", "") :
+            locale = req.method == "PUT" ? get(HTTP.queryparams(String(req.body)), "site_text[locale]", "") :
                                            get(qp, "locale", "")
             isempty(locale) && return HTTP.Response(400, "invalid locale")
             texts = get!(state, locale, Dict{String,String}())
@@ -54,13 +48,13 @@ function mock_discourse(state::Dict{String,Dict{String,String}}, things::Dict{St
                     "site_texts" => [Dict("id" => k, "overridden" => true) for k in pageks],
                     "extras" => Dict("has_more" => length(ks) > (page + 1) * PAGE_SIZE))))
             end
-            key = HTTP.unescapeuri(replace(chopprefix(path, "$st/"), r"\.json$" => ""))
+            key = key_of(path, st)
             if req.method == "GET"
                 haskey(texts, key) || return HTTP.Response(404, "no such site text")
                 return HTTP.Response(200, JSON.json(Dict("site_text" => Dict("id" => key, "value" => texts[key]))))
             elseif req.method == "PUT"
                 LAST_PUT_LOCALE[] = locale
-                texts[key] = parse_form(String(req.body))["site_text[value]"]
+                texts[key] = HTTP.queryparams(String(req.body))["site_text[value]"]
                 return HTTP.Response(200, JSON.json(Dict("site_text" => Dict("id" => key, "value" => texts[key]))))
             elseif req.method == "DELETE"
                 haskey(texts, key) || return HTTP.Response(404, "no such site text")
@@ -76,12 +70,12 @@ function mock_discourse(state::Dict{String,Dict{String,String}}, things::Dict{St
                     "mock_things" => [Dict("id" => k) for k in sort!(collect(keys(things)))],
                     "extras" => Dict("has_more" => false))))
             end
-            key = HTTP.unescapeuri(replace(chopprefix(path, "$mt/"), r"\.json$" => ""))
+            key = key_of(path, mt)
             req.method == "GET" && return haskey(things, key) ?
                 HTTP.Response(200, JSON.json(Dict("mock_thing" => Dict("value" => things[key])))) :
                 HTTP.Response(404, "no such thing")
             if req.method == "PUT"
-                things[key] = parse_form(String(req.body))["mock_thing[value]"]
+                things[key] = HTTP.queryparams(String(req.body))["mock_thing[value]"]
                 return HTTP.Response(200, "ok")
             end
         end
@@ -99,14 +93,6 @@ client = Client(base_url = "http://127.0.0.1:$PORT", api_key = "test-key", api_u
 
 en() = get!(state, "en", Dict{String,String}())
 fr() = get!(state, "fr", Dict{String,String}())
-
-git(args...; dir) = readchomp(setenv(Cmd(["git", args...]); dir))
-
-function init_test_repo(dir)
-    for args in (["init", "-q"], ["config", "user.name", "test"], ["config", "user.email", "t@t"])
-        git(args...; dir)
-    end
-end
 
 @testset "DiscourseAdmin" begin
     @testset "conventions" begin
@@ -203,44 +189,35 @@ end
         end
     end
 
-    @testset "file_changes and diff_range" begin
+    @testset "file_changes" begin
         mktempdir() do dir
             cd(dir) do
-                init_test_repo(dir)
+                git("init", "-q"); git("config", "user.name", "test"); git("config", "user.email", "t@t")
                 mkpath("$ROUTE/one.key")
                 write("$ROUTE/one.key/en.txt", "v1")
                 write("$ROUTE/.gitkeep", "")
                 write("README.md", "root files are ignored")
                 mkpath(".github"); write(".github/dotdirs-are-ignored.txt", "x")
                 mkpath("src"); write("src/pkg.jl", "# v1")
-                git("add", "-A"; dir); git("commit", "-qm", "c1"; dir)
-                c1 = git("rev-parse", "HEAD"; dir)
+                git("add", "-A"); git("commit", "-qm", "c1")
+                c1 = git("rev-parse", "HEAD")
 
                 write("$ROUTE/one.key/en.txt", "v2")
                 mkpath("$ROUTE/two.key"); write("$ROUTE/two.key/en.txt", "new")
                 write("src/pkg.jl", "# v2")  # outside admin/: never synced
-                git("add", "-A"; dir); git("commit", "-qm", "c2"; dir)
+                git("add", "-A"); git("commit", "-qm", "c2")
 
                 # contents are read from the working tree, i.e. the range tip
                 @test sort(file_changes("$c1..HEAD"); by = first) ==
                       ["$ROUTE/one.key/en.txt" => "v2", "$ROUTE/two.key/en.txt" => "new"]
 
                 rm("$ROUTE/two.key"; recursive = true)
-                git("add", "-A"; dir); git("commit", "-qm", "c3"; dir)
-                c3 = git("rev-parse", "HEAD"; dir)
+                git("add", "-A"); git("commit", "-qm", "c3")
+                c3 = git("rev-parse", "HEAD")
 
                 # two.key was added then deleted, so it nets out of the full span
                 @test file_changes("$c1..$c3") == ["$ROUTE/one.key/en.txt" => "v2"]
                 @test file_changes("HEAD~1..HEAD") == ["$ROUTE/two.key/en.txt" => nothing]
-
-                # ranges come from the push event's before sha, with a
-                # fallback for events with no valid one (e.g. a new branch)
-                withenv("BEFORE_SHA" => c1) do
-                    @test diff_range() == "$c1..HEAD"
-                end
-                withenv("BEFORE_SHA" => "0"^40) do
-                    @test diff_range() == "HEAD~1..HEAD"
-                end
             end
         end
     end
