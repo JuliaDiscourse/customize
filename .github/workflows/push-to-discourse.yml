@@ -2,8 +2,7 @@ name: Push to Discourse
 
 on:
   push:
-    branches: [main] # Only actually push to Discourse on main
-  pull_request: # Dry run on all PRs
+    branches: [main]
 
 permissions:
   contents: read
@@ -12,43 +11,11 @@ concurrency:
   group: discourse-sync
   cancel-in-progress: false
 
+# The API key must only ever run alongside main's own (reviewed) code, so
+# this workflow has no pull_request presence at all: a PR's diff *is* the
+# preview of the API calls it will make, and CI tests the code.
 jobs:
-  # PRs get a credential-less dry run: the planned API calls are printed,
-  # but nothing here can see the API key — pull requests execute code from
-  # the PR branch, which must never run with credentials. The authoritative
-  # drift check happens in the push job below, on main's own code.
-  dry-run:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        fetch-depth: 0  # Full history for range diffing
-        persist-credentials: false
-
-    - name: Setup Julia
-      uses: julia-actions/setup-julia@fa02766e078afaaf09b14210362cee14137e6a32 # v3.0.2
-      with:
-        version: '1'
-
-    - name: Cache Julia packages
-      uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
-
-    - name: Instantiate DiscourseAdmin.jl
-      run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
-
-    - name: Show the changes that would be pushed to Discourse
-      run: julia --project=. -e 'using DiscourseAdmin; DiscourseAdmin.main_push()'
-      env:
-        GITHUB_EVENT_NAME: ${{ github.event_name }}
-        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-
   push:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment: "GitHub Actions CI"
     timeout-minutes: 20
@@ -97,13 +64,12 @@ jobs:
       env:
         API_KEY: ${{ secrets.API_KEY }}
         API_USER: ${{ secrets.API_USER }}
-        GITHUB_EVENT_NAME: ${{ github.event_name }}
         BEFORE_SHA: ${{ github.event.before }}
 
   # Verify the changes landed
   pull:
     needs: push
-    if: ${{ always() && github.event_name == 'push' }}
+    if: ${{ always() }}
     permissions:
       contents: write
     uses: ./.github/workflows/pull-from-discourse.yml

@@ -261,14 +261,10 @@ git(args...) = readchomp(Cmd(["git", args...]))
 
 # The commit range whose diff should be applied to Discourse. The pull job
 # runs after every push, keeping main's tip in step with the live state, so
-# the triggering event's own range is exactly what remains to apply.
-function diff_range(deploy::Bool)
-    if deploy
-        before = get(ENV, "BEFORE_SHA", "")
-        return "$(isempty(before) || all(==('0'), before) ? "HEAD~1" : before)..HEAD"
-    end
-    # Pull request dry run: everything the PR would add to its base
-    return "$(ENV["PR_BASE_SHA"])...$(ENV["PR_HEAD_SHA"])"
+# the push event's own range is exactly what remains to apply.
+function diff_range()
+    before = get(ENV, "BEFORE_SHA", "")
+    return "$(isempty(before) || all(==('0'), before) ? "HEAD~1" : before)..HEAD"
 end
 
 """
@@ -291,32 +287,22 @@ function file_changes(range)
 end
 
 """
-    apply!(c::Union{Client,Nothing}, changes; deploy)
+    apply!(c::Client, changes)
 
 Apply `changes` (as returned by [`file_changes`](@ref)) to each file's
-namesake entry, or just print them when `deploy=false`.
+namesake entry.
 """
-function apply!(c::Union{Client,Nothing}, changes; deploy::Bool)
-    println("\n🔍 Sending $(length(changes)) updates:")
-    println("━"^40)
-
+function apply!(c::Client, changes)
+    println("🔍 Sending $(length(changes)) updates:")
     for (file, content) in changes
         route, key, locale = entry_for(file)
-
         if isnothing(content)
             # Deleting the file reverts the entry to the Discourse default
-            println("🗑️  REVERT: $file → DELETE $key\n")
-            if deploy
-                reset_value!(c, route, key; locale)
-                println("✅ Reverted $file")
-            end
+            reset_value!(c, route, key; locale)
+            println("🗑️  Reverted $file")
         else
-            println("📝 UPDATE: $file → PUT $key")
-            println("   Value: $(repr(content))\n")
-            if deploy
-                set_value!(c, route, key, content; locale)
-                println("✅ Updated $file")
-            end
+            set_value!(c, route, key, content; locale)
+            println("✅ Updated $file")
         end
     end
     return nothing
@@ -344,23 +330,19 @@ end
     main_push()
 
 Workflow entry point: apply the newly-pushed changes to the live Discourse
-site, or just dry-run them on a pull request. The workflow separately
-verifies that the pre-change state still matches the live one before
-running this.
+site. The workflow separately verifies that the pre-change state still
+matches the live one before running this.
 """
 function main_push()
     try
-        deploy = get(ENV, "GITHUB_EVENT_NAME", "") == "push"
-        println("🚀 Running in $(deploy ? "LIVE" : "DRY RUN") mode")
-
-        range = diff_range(deploy)
+        range = diff_range()
         println("Diffing $range")
         changes = file_changes(range)
         if isempty(changes)
             println("No file changes detected")
             return
         end
-        apply!(deploy ? client_from_env() : nothing, changes; deploy)
+        apply!(client_from_env(), changes)
     catch e
         e isa ErrorException ? fail(e.msg) : rethrow()
     end
