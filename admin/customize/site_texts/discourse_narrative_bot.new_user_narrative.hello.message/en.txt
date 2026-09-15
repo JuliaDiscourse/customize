@@ -1,0 +1,7 @@
+Thanks for joining %{title}, and welcome!
+
+- I’m only a robot, but [our friendly staff](%{base_uri}/about) are also here to help if you need to reach a person.
+
+- For safety reasons, we temporarily limit what new users can do. You’ll gain [new abilities](https://blog.discourse.org/2018/06/understanding-discourse-trust-levels/) (and [badges](%{base_uri}/badges)) as we get to know you.
+
+- We take pride in our discussions, and we need your help to keep things friendly, welcoming, and productive — take a moment to review [our discourse guidelines](%{base_uri}/faq) and you may earn a badge in the process!  As with any part of the Julia Community we respect and follow the [Julia Community Standards](https://julialang.org/community/standards/).

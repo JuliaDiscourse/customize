@@ -1,0 +1,1 @@
+You need to wait %{duration} after posting in this topic to post again

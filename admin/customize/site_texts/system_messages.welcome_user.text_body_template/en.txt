@@ -1,0 +1,7 @@
+Thanks for joining %{site_name}, and welcome!
+
+%{new_user_tips}
+
+We take pride in our discussions, and we need your help to keep things friendly, welcoming, and productive — take a moment to review [our discourse guidelines](%{base_url}/faq) and you may earn a badge in the process!  As with any part of the Julia Community we respect and follow the [Julia Community Standards](https://julialang.org/community/standards/).
+
+Enjoy your stay!
