@@ -35,10 +35,10 @@ jobs:
       uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
 
     - name: Instantiate DiscourseAdmin.jl
-      run: julia --project=DiscourseAdmin -e 'using Pkg; Pkg.instantiate()'
+      run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
     - name: Fetch current state from Discourse
-      run: julia --project=DiscourseAdmin -e 'using DiscourseAdmin; DiscourseAdmin.main_pull()'
+      run: julia --project=. -e 'using DiscourseAdmin; DiscourseAdmin.main_pull()'
       env:
         API_KEY: ${{ secrets.API_KEY }}
         API_USER: ${{ secrets.API_USER }}

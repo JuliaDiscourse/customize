@@ -128,7 +128,7 @@ end
                 # outside admin/ (like the package itself) is out of scope
                 mkpath("$ROUTE/one.key"); write("$ROUTE/one.key/en.txt", "x")
                 mkpath("admin/mock_things"); write("admin/mock_things/.gitkeep", "")
-                mkpath("DiscourseAdmin/src"); write("DiscourseAdmin/src/pkg.jl", "x")
+                mkpath("src"); write("src/pkg.jl", "x")
                 @test config_routes() == [ROUTE, "admin/mock_things"]
                 @test existing_files(ROUTE, "en") == Dict("one.key" => "$ROUTE/one.key/en.txt")
                 @test isempty(existing_files(ROUTE, "fr"))
@@ -212,13 +212,13 @@ end
                 write("$ROUTE/.gitkeep", "")
                 write("README.md", "root files are ignored")
                 mkpath(".github"); write(".github/dotdirs-are-ignored.txt", "x")
-                mkpath("DiscourseAdmin/src"); write("DiscourseAdmin/src/pkg.jl", "# v1")
+                mkpath("src"); write("src/pkg.jl", "# v1")
                 git("add", "-A"; dir); git("commit", "-qm", "c1"; dir)
                 c1 = git("rev-parse", "HEAD"; dir)
 
                 write("$ROUTE/one.key/en.txt", "v2")
                 mkpath("$ROUTE/two.key"); write("$ROUTE/two.key/en.txt", "new")
-                write("DiscourseAdmin/src/pkg.jl", "# v2")  # outside admin/: never synced
+                write("src/pkg.jl", "# v2")  # outside admin/: never synced
                 git("add", "-A"; dir); git("commit", "-qm", "c2"; dir)
 
                 # contents are read from the working tree, i.e. the range tip
