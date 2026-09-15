@@ -24,12 +24,12 @@ The **Pull from Discourse** action fetches all currently-overridden site texts f
 
 The **Push to Discourse** action runs upon commit to `main`. It diffs the pushed range of commits and applies those changes to Discourse: each changed file's basename is used as the site text key with its contents as the override value, and a deleted file reverts that override to the Discourse default. Commits made by the pull action are skipped, since that state already came from Discourse.
 
-Before applying anything, the action verifies that the *pre-merge* state of the repository exactly mirrors the live Discourse state. If an admin has changed something through the UI that hasn't been pulled yet, the action fails instead of clobbering that change. This check also runs in the PR dry run (when secrets are available; PRs from forks skip it), so drift is surfaced before merging; making the PR check a required status check in the branch protection settings enforces this.
+Before applying anything, the action verifies that the *pre-merge* state of the repository exactly mirrors the live Discourse state. If an admin has changed something through the UI that hasn't been pulled yet, the action fails instead of clobbering that change and the pull job re-syncs `main`; rebase and re-land.
 
 After every push run on `main` — whether it succeeded or failed — the pull action runs and mirrors the live state back into the repo. A successful push makes this a no-op; a failed or partially-applied one is automatically corrected by a follow-up commit, so `main` always converges to the live Discourse state with no manual reverts. The offending change can then be rebased and re-landed.
 
 Because the pull runs after every push, `main`'s tip stays in step with the live state, and each push run simply diffs its own triggering event. Any disagreement between the two — an admin UI edit, a workflow run that got skipped or failed — either trips the drift check (applying nothing) or is converged by the next pull as a visible commit, so the system never needs to track what was applied. Routes are declared by the files present — a bare `.gitkeep` in the route directory suffices — and a localized route is mirrored for every locale the site has entries in, so the first pull populates everything from the live state.
 
-The push action does not perform any config-changing API calls in pull requests; it only prints a dry run of what would happen. All PRs must still be carefully reviewed.
+Pull requests run no part of the push action — the API key only ever runs alongside `main`'s own reviewed code, and a PR's diff *is* the preview of the API calls it will make. All PRs must be carefully reviewed.
 
 > **Note:** for the pull action to commit directly to `main`, any branch protection on `main` must allow the GitHub Actions bot to push (or not require pull requests for it).

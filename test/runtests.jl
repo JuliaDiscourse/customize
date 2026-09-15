@@ -233,16 +233,13 @@ end
                 @test file_changes("$c1..$c3") == ["$ROUTE/one.key/en.txt" => "v2"]
                 @test file_changes("HEAD~1..HEAD") == ["$ROUTE/two.key/en.txt" => nothing]
 
-                # deploy ranges come from the push event's before sha, with a
+                # ranges come from the push event's before sha, with a
                 # fallback for events with no valid one (e.g. a new branch)
                 withenv("BEFORE_SHA" => c1) do
-                    @test diff_range(true) == "$c1..HEAD"
+                    @test diff_range() == "$c1..HEAD"
                 end
                 withenv("BEFORE_SHA" => "0"^40) do
-                    @test diff_range(true) == "HEAD~1..HEAD"
-                end
-                withenv("PR_BASE_SHA" => c1, "PR_HEAD_SHA" => c3) do
-                    @test diff_range(false) == "$c1...$c3"
+                    @test diff_range() == "HEAD~1..HEAD"
                 end
             end
         end
@@ -251,15 +248,9 @@ end
     @testset "apply!" begin
         empty!(state)
         en()["one.key"] = "old"
-        changes = ["$ROUTE/one.key/en.txt" => "new value",
-                   "$ROUTE/gone.key/en.txt" => nothing]
-
-        # dry run touches nothing
-        apply!(nothing, changes; deploy = false)
-        @test en() == Dict("one.key" => "old")
-
         en()["gone.key"] = "x"
-        apply!(client, changes; deploy = true)
+        apply!(client, ["$ROUTE/one.key/en.txt" => "new value",
+                        "$ROUTE/gone.key/en.txt" => nothing])
         @test en() == Dict("one.key" => "new value")
         @test LAST_PUT_LOCALE[] == "en"  # derived from the filename
     end
