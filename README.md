@@ -10,7 +10,7 @@ These can range from very short slugs (like date formats) to long form (and cruc
 
 ## Other admin settings
 
-Would similarly be possible, but may be even more dangerous and are currently not supported.
+Are supported by the same convention — any route under `admin/` can be mirrored — but may be even more dangerous; none are tracked here yet.
 
 ## How it works
 
@@ -18,11 +18,11 @@ This repository is itself `DiscourseAdmin.jl`, a Julia package wrapping the Disc
 
 ### Pull from Discourse
 
-The **Pull from Discourse** action fetches all currently-overridden site texts from the Discourse API and mirrors them into `admin/customize/site_texts/` — adding, updating, and removing files so the repo matches the live state — then commits any resulting diff directly to `main` as the GitHub Actions user. It runs on a daily schedule, on demand via manual dispatch, and automatically after every push run (see below). This captures changes made through the admin UI.
+The **Pull from Discourse** action mirrors every configured route under `admin/` from the Discourse API — adding, updating, and removing files so the repo matches the live state — then commits any resulting diff directly to `main` as the GitHub Actions user. It runs on a daily schedule, on demand via manual dispatch, and automatically after every push run (see below). This captures changes made through the admin UI.
 
 ### Push to Discourse
 
-The **Push to Discourse** action runs upon commit to `main`. It diffs the pushed range of commits and applies those changes to Discourse: each changed file's basename is used as the site text key with its contents as the override value, and a deleted file reverts that override to the Discourse default. Commits made by the pull action are skipped, since that state already came from Discourse.
+The **Push to Discourse** action runs upon commit to `main`. It diffs the pushed range of commits and applies each changed file to the entry its path names (see above), with a deleted file reverting that entry to the Discourse default. Commits made by the pull action are skipped, since that state already came from Discourse.
 
 Before applying anything, the action verifies that the *pre-merge* state of the repository exactly mirrors the live Discourse state. If an admin has changed something through the UI that hasn't been pulled yet, the action fails instead of clobbering that change and the pull job re-syncs `main`; rebase and re-land.
 

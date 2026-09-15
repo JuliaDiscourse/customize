@@ -39,8 +39,6 @@ Base.@kwdef struct Client
     api_user::String
 end
 
-has_credentials() = !isempty(get(ENV, "API_KEY", "")) && !isempty(get(ENV, "API_USER", ""))
-
 """
     client_from_env() -> Client
 
@@ -48,12 +46,16 @@ Construct a [`Client`](@ref) from the `API_KEY` and `API_USER` environment
 variables, with `DISCOURSE_URL` optionally overriding the instance URL.
 """
 function client_from_env()
-    has_credentials() || error("API_KEY and API_USER must be set")
+    (isempty(get(ENV, "API_KEY", "")) || isempty(get(ENV, "API_USER", ""))) &&
+        error("API_KEY and API_USER must be set")
     return Client(base_url = get(ENV, "DISCOURSE_URL", DEFAULT_BASE_URL),
                   api_key = ENV["API_KEY"], api_user = ENV["API_USER"])
 end
 
 auth_headers(c::Client) = ["Api-Key" => c.api_key, "Api-Username" => c.api_user]
+
+get_json(c::Client, url; query = Pair{String,String}[]) =
+    JSON.parse(HTTP.get(url; query, headers = auth_headers(c)).body)
 
 # Discourse is Rails: a route's JSON objects and form fields use the
 # singular of its last segment (admin/customize/site_texts → site_text)
@@ -76,11 +78,9 @@ function configured_keys(c::Client, route; locale = nothing)
     keys = String[]
     page = 0
     while true
-        resp = HTTP.get("$(endpoint(c, route)).json";
+        data = get_json(c, "$(endpoint(c, route)).json";
                         query = [["overridden" => "true", "page" => string(page)];
-                                 locale_query(locale)],
-                        headers = auth_headers(c))
-        data = JSON.parse(String(resp.body))
+                                 locale_query(locale)])
         append!(keys, String[t["id"] for t in data[basename(route)]])
         get(get(data, "extras", Dict()), "has_more", false) || return keys
         page += 1
@@ -92,11 +92,9 @@ end
 
 The currently-configured value of `key` on the `route` endpoint.
 """
-function get_value(c::Client, route, key; locale = nothing)
-    resp = HTTP.get("$(endpoint(c, route, key)).json";
-                    query = locale_query(locale), headers = auth_headers(c))
-    return JSON.parse(String(resp.body))[singular(route)]["value"]::String
-end
+get_value(c::Client, route, key; locale = nothing) =
+    get_json(c, "$(endpoint(c, route, key)).json";
+             query = locale_query(locale))[singular(route)]["value"]::String
 
 """
     set_value!(c::Client, route, key, value; locale=nothing)
@@ -104,12 +102,10 @@ end
 Create or update the configuration of `key` on the `route` endpoint.
 """
 function set_value!(c::Client, route, key, value; locale = nothing)
-    form = ["$(singular(route))[value]" => value]
-    isnothing(locale) || push!(form, "$(singular(route))[locale]" => locale)
-    HTTP.put(endpoint(c, route, key);
-             headers = [auth_headers(c);
-                        "Content-Type" => "application/x-www-form-urlencoded; charset=UTF-8"],
-             body = HTTP.escapeuri(form))
+    form = Dict("$(singular(route))[value]" => value)
+    isnothing(locale) || (form["$(singular(route))[locale]"] = locale)
+    # HTTP form-encodes a Dict body and sets the Content-Type itself
+    HTTP.put(endpoint(c, route, key); headers = auth_headers(c), body = form)
     return nothing
 end
 
@@ -124,12 +120,35 @@ function reset_value!(c::Client, route, key; locale = nothing)
     return nothing
 end
 
+"""
+    available_locales(c::Client) -> Vector{String}
+
+Every locale the instance supports, read from the `default_locale` site
+setting's valid values.
+"""
+function available_locales(c::Client)
+    settings = get_json(c, "$(c.base_url)/admin/site_settings.json")["site_settings"]
+    i = findfirst(s -> s["setting"] == "default_locale", settings)
+    isnothing(i) && error("could not determine the available locales from the site settings")
+    return String[v["value"] for v in settings[i]["valid_values"]]
+end
+
 # ---------------------------------------------------------------------------
 # Repository conventions
+
+"The repository directory mirroring the admin API."
+const ROOT = "admin"
 
 # Extensions are only for display on GitHub; strip them to find the name
 const DISPLAY_EXTENSION = r"\.(txt|md|json)$"
 const LOCALE_SHAPE = r"^[a-z]{2}([_-][A-Za-z]{2})?$"
+
+# Dotfiles (like a .gitkeep) are never entries
+hidden(name) = startswith(name, ".")
+
+# Of all the admin routes, only site_texts requires (and localizes by) a
+# locale parameter; every other route ignores it.
+localized(route) = basename(route) == "site_texts"
 
 """
     entry_for(file) -> (route, key, locale)
@@ -145,92 +164,82 @@ function entry_for(file)
     return (dirname(file), name, nothing)
 end
 
+# The inverse of entry_for, used for keys that don't have a file yet
+file_for(route, key, locale) =
+    isnothing(locale) ? joinpath(route, "$key.txt") : joinpath(route, key, "$locale.txt")
+
 """
-    config_routes(root="admin") -> Vector{String}
+    config_routes() -> Vector{String}
 
 The API routes the repository mirrors, declared by the files present: an
 entry file declares its own route, and a dotfile (like a `.gitkeep`
 holding an otherwise-empty route directory) declares its containing
 directory.
 """
-function config_routes(root = "admin")
+function config_routes()
     routes = Set{String}()
-    isdir(root) || return String[]
-    for (path, _, files) in walkdir(root), f in files
-        push!(routes, startswith(f, ".") ? path : entry_for(joinpath(path, f))[1])
+    isdir(ROOT) || return String[]
+    for (path, _, files) in walkdir(ROOT), f in files
+        push!(routes, hidden(f) ? path : entry_for(joinpath(path, f))[1])
     end
     return sort!(collect(routes))
 end
 
-# Map each key of a (route, locale) pair to its on-disk file, so an existing
-# file's display extension is preserved when its value is updated.
-function existing_files(route, locale)
-    bykey = Dict{String,String}()
-    isdir(route) || return bykey
+"""
+    existing_files(route) -> Dict{locale, Dict{key, file}}
+    existing_files(route, locale) -> Dict{key, file}
+
+The entry files a route currently has, grouped by locale (with
+`locale === nothing` for locale-less entries), so an existing file's
+display extension is preserved when its value is updated.
+"""
+function existing_files(route)
+    bylocale = Dict{Union{String,Nothing},Dict{String,String}}()
+    isdir(route) || return bylocale
     for (path, _, files) in walkdir(route), f in files
-        startswith(f, ".") && continue
+        hidden(f) && continue
         file = joinpath(path, f)
-        r, key, loc = entry_for(file)
-        r == route && loc == locale && (bykey[key] = file)
+        r, key, locale = entry_for(file)
+        r == route && (get!(bylocale, locale, Dict{String,String}())[key] = file)
     end
-    return bykey
+    return bylocale
 end
+
+existing_files(route, locale) = get(existing_files(route), locale, Dict{String,String}())
 
 # ---------------------------------------------------------------------------
 # Pull: mirror the live state into the repository
 
 """
-    available_locales(c::Client) -> Vector{String}
-
-Every locale the instance supports, read from the `default_locale` site
-setting's valid values.
-"""
-function available_locales(c::Client)
-    resp = HTTP.get("$(c.base_url)/admin/site_settings.json"; headers = auth_headers(c))
-    settings = JSON.parse(String(resp.body))["site_settings"]
-    i = findfirst(s -> s["setting"] == "default_locale", settings)
-    isnothing(i) && error("could not determine the available locales from the site settings")
-    return String[v["value"] for v in settings[i]["valid_values"]]
-end
-
-# Of all the admin routes, only site_texts requires (and localizes by) a
-# locale parameter; every other route ignores it.
-localized(route) = basename(route) == "site_texts"
-
-"""
-    pull!(c::Client, routes=config_routes())
+    pull!(c::Client)
 
 Mirror the live configuration of each route into its files, adding,
 updating, and removing them so the repository exactly reflects the live
 state. A [`localized`](@ref) route is mirrored for every locale the site
 has entries in.
 """
-function pull!(c::Client, routes = config_routes())
+function pull!(c::Client)
+    routes = config_routes()
+    locales = any(localized, routes) ? available_locales(c) : String[]
     for route in routes
-        if localized(route)
-            # mirror every locale with configured entries (or with
-            # lingering files to clean up)
-            for locale in available_locales(c)
-                keys = configured_keys(c, route; locale)
-                isempty(keys) && isempty(existing_files(route, locale)) && continue
-                mirror!(c, route, locale, keys)
-            end
-        else
-            mirror!(c, route, nothing)
+        bylocale = existing_files(route)
+        for locale in (localized(route) ? locales : [nothing])
+            keys = configured_keys(c, route; locale)
+            existing = get(bylocale, locale, Dict{String,String}())
+            # nothing configured and nothing lingering to clean up
+            isempty(keys) && isempty(existing) && continue
+            mirror!(c, route, locale, keys, existing)
         end
     end
     return nothing
 end
 
-function mirror!(c::Client, route, locale, keys = configured_keys(c, route; locale))
+function mirror!(c::Client, route, locale, keys, existing)
     println("🔍 Found $(length(keys)) configured entries in $route$(isnothing(locale) ? "" : " ($locale)")")
 
-    existing = existing_files(route, locale)
     for key in keys
         value = get_value(c, route, key; locale)
-        file = get(existing, key) do
-            isnothing(locale) ? joinpath(route, "$key.txt") : joinpath(route, key, "$locale.txt")
-        end
+        file = get(() -> file_for(route, key, locale), existing, key)
         current = isfile(file) ? read(file, String) : nothing
         if current != value
             mkpath(dirname(file))
@@ -259,14 +268,6 @@ end
 
 git(args...) = readchomp(Cmd(["git", args...]))
 
-# The commit range whose diff should be applied to Discourse. The pull job
-# runs after every push, keeping main's tip in step with the live state, so
-# the push event's own range is exactly what remains to apply.
-function diff_range()
-    before = get(ENV, "BEFORE_SHA", "")
-    return "$(isempty(before) || all(==('0'), before) ? "HEAD~1" : before)..HEAD"
-end
-
 """
     file_changes(range) -> Vector{Pair{String,Union{String,Nothing}}}
 
@@ -280,7 +281,7 @@ function file_changes(range)
     for line in eachsplit(git("diff", "--name-status", "--no-renames", range), '\n'; keepempty = false)
         status, file = split(line, '\t')
         parts = splitpath(file)
-        (length(parts) < 2 || first(parts) != "admin" || any(startswith("."), parts)) && continue
+        (length(parts) < 2 || first(parts) != ROOT || any(hidden, parts)) && continue
         push!(changes, String(file) => status == "D" ? nothing : read(String(file), String))
     end
     return changes
@@ -311,41 +312,39 @@ end
 # ---------------------------------------------------------------------------
 # Workflow entry points
 
-fail(msg) = (println(stderr, "❌ $msg"); exit(1))
+# An ErrorException is a clean user-facing failure; anything else is a crash
+main(f) = try
+    f()
+catch e
+    e isa ErrorException || rethrow()
+    println(stderr, "❌ $(e.msg)")
+    exit(1)
+end
 
 """
     main_pull()
 
 Workflow entry point: mirror the live Discourse state into the repository.
 """
-function main_pull()
-    try
-        pull!(client_from_env())
-    catch e
-        e isa ErrorException ? fail(e.msg) : rethrow()
-    end
-end
+main_pull() = main(() -> pull!(client_from_env()))
 
 """
     main_push()
 
-Workflow entry point: apply the newly-pushed changes to the live Discourse
-site. The workflow separately verifies that the pre-change state still
-matches the live one before running this.
+Workflow entry point: apply the changes the `BEFORE_SHA..HEAD` push added
+to the live Discourse site. The workflow resolves `BEFORE_SHA` and
+separately verifies that it still matches the live state before running
+this.
 """
-function main_push()
-    try
-        range = diff_range()
-        println("Diffing $range")
-        changes = file_changes(range)
-        if isempty(changes)
-            println("No file changes detected")
-            return
-        end
-        apply!(client_from_env(), changes)
-    catch e
-        e isa ErrorException ? fail(e.msg) : rethrow()
+main_push() = main() do
+    range = "$(ENV["BEFORE_SHA"])..HEAD"
+    println("Diffing $range")
+    changes = file_changes(range)
+    if isempty(changes)
+        println("No file changes detected")
+        return
     end
+    apply!(client_from_env(), changes)
 end
 
 end # module

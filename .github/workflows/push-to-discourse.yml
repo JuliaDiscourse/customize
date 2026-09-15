@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: "GitHub Actions CI"
     timeout-minutes: 20
+    env:
+      BEFORE_SHA: ${{ github.event.before }}
 
     steps:
     - name: Checkout code
@@ -36,24 +38,27 @@ jobs:
       uses: julia-actions/cache@a7bed9df697e5d7309d68afe7542a87621a8b6c8 # v3.3.0
 
     - name: Instantiate DiscourseAdmin.jl
-      run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+      uses: julia-actions/julia-buildpkg@e3eb439fad4f9aba7da2667e7510e4a46ebc46e1 # v1.7.0
 
     - name: Ensure the prior state matches the current Discourse settings
       env:
         API_KEY: ${{ secrets.API_KEY }}
         API_USER: ${{ secrets.API_USER }}
-        BASE_SHA: ${{ github.event.before }}
       run: |
-        REF="$BASE_SHA"
-        git rev-parse -q --verify "$REF^{commit}" >/dev/null 2>&1 || REF=HEAD~1
+        # Resolve the pre-push ref once for this whole job (a push event with
+        # no valid "before", e.g. a new branch, falls back to HEAD~1)
+        git rev-parse -q --verify "$BEFORE_SHA^{commit}" >/dev/null 2>&1 || BEFORE_SHA=HEAD~1
+        echo "BEFORE_SHA=$BEFORE_SHA" >> "$GITHUB_ENV"
         julia --project=. -e 'using DiscourseAdmin; DiscourseAdmin.main_pull()'
-        git add -A .
+        git add -A -- admin
         # Only routes the prior state already tracks can meaningfully drift:
-        # a route directory first introduced by this change has nothing to
-        # compare against (the pull job mirrors its live entries afterwards)
-        DIRS=$(git ls-tree -r --name-only "$REF" -- admin | xargs -rn1 dirname | sort -u)
-        if [ -n "$DIRS" ] && ! git diff --cached --quiet "$REF" -- $DIRS ':!*/.*'; then
-          git diff --cached --stat "$REF" -- $DIRS ':!*/.*'
+        # a route first introduced by this change has nothing to compare
+        # against (the pull job mirrors its live entries afterwards)
+        DIRS=$(git ls-tree -r --name-only "$BEFORE_SHA" -- admin |
+               julia --project=. -e 'using DiscourseAdmin: entry_for; foreach(f -> println(entry_for(f)[1]), eachline())' |
+               sort -u)
+        if [ -n "$DIRS" ] && ! git diff --cached --quiet "$BEFORE_SHA" -- $DIRS; then
+          git diff --cached --stat "$BEFORE_SHA" -- $DIRS
           echo "::error::The repository does not reflect the current Discourse state. The pull job will re-sync it automatically; then rebase and re-land this change."
           exit 1
         fi
@@ -64,7 +69,6 @@ jobs:
       env:
         API_KEY: ${{ secrets.API_KEY }}
         API_USER: ${{ secrets.API_USER }}
-        BEFORE_SHA: ${{ github.event.before }}
 
   # Verify the changes landed
   pull:
